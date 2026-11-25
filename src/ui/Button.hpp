@@ -111,6 +111,7 @@ public:
 	void	setText(const char* _text) { text = _text; }
 	void	setFont(const char* _font) { font = _font; }
 	void	setIcon(const char* _icon);
+	void	setContentScale(double scale) { contentScale = scale; }
 	void    setIconColor(const Uint32& _color) { iconColor = _color; }
 	void	setTooltip(const char* _tooltip) { tooltip = _tooltip; }
 	void	setStyle(int _style) { style = static_cast<style_t>(_style); }
@@ -139,6 +140,7 @@ private:
 	SDL_Rect size{0,0,0,0};							//!< size and position of the button within its parent frame
 	Uint32 color = 0;								//!< the button's color
 	Uint32 iconColor = 0xffffffff;                  //!< icon color
+	double						contentScale = 1.0;
 	Uint32 highlightColor = 0;						//!< color used when the button is selected/highlighted
 	Uint32 textColor = 0;							//!< text color
 	Uint32 textHighlightColor = 0;					//!< text color used when the button is selected/highlighted

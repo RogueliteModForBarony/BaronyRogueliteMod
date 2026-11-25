@@ -424,6 +424,15 @@ void Stat::clearStats()
 	this->HUNGER = 1000;
 	this->LVL = 1;
 	this->EXP = 0;
+	this->rogueliteXpGrowthPercent = 0;
+	for ( int i = 0; i < NUMSTATS; ++i )
+	{
+		this->rogueliteSkillGrowthPercent[i] = 0;
+	}
+	this->rogueliteMagicResistancePercent = 0;
+	this->rogueliteBurningResistancePercent = 0;
+	this->roguelitePoisonResistancePercent = 0;
+	this->rogueliteWeightReductionPercent = 0;
 	list_FreeAll(&this->FOLLOWERS);
 	for (x = 0; x < std::max(NUMPROFICIENCIES, NUMEFFECTS); x++)
 	{

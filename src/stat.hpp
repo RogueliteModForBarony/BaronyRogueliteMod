@@ -337,6 +337,12 @@ public:
 	Sint32 STR, DEX, CON, INT, PER, CHR;
 	Sint32 EXP, LVL;
 	Sint32 GOLD, HUNGER;
+	Sint32 rogueliteXpGrowthPercent = 0;
+	Sint32 rogueliteSkillGrowthPercent[NUMSTATS] = {};
+	Sint32 rogueliteMagicResistancePercent = 0;
+	Sint32 rogueliteBurningResistancePercent = 0;
+	Sint32 roguelitePoisonResistancePercent = 0;
+	Sint32 rogueliteWeightReductionPercent = 0;
 	// randomised additional values to add to attributes
 	Sint32 RANDOM_STR, RANDOM_DEX, RANDOM_CON, RANDOM_INT, RANDOM_PER, RANDOM_CHR;
 	Sint32 RANDOM_MAXHP, RANDOM_HP, RANDOM_MAXMP, RANDOM_MP;

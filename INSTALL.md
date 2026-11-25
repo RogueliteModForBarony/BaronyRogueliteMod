@@ -68,7 +68,7 @@ If you're using MinGW or GCC, you'll need to run CMake first, then make: cmake .
 
 If you are missing GL header files like glext.h they are available from https://www.khronos.org/registry/OpenGL/api/GL/.
 
-### Running Barony in Visual Studio.
+### Running Barony in Visual Studio
 
 By default, the "barony" project is set as the startup project. (The startup project is the project Visual Studio will launch when you hit the green "play" (debug) button)
 
@@ -79,6 +79,58 @@ To do that, you must right click on the "INSTALL" project and hit "Build". This 
 After that, all you have to do is hit the big green play button, and the game should run.
 
 If you'd rather debug the editor, instead of hitting the green play button up top, right click on the "editor" project, mouse over "debug", and then click "start new instance"
+
+## Configuring the Roguelite Skill Tree
+
+The optional skill tree is configured by `data/roguelite_skill_tree.json`. It is
+enabled by default in the shipped example. Set `"enabled": false` to turn it off.
+The config must be available in the game's `data` directory. When running a local
+build from the Steam installation directory, copy the file there if it is not
+already present.
+
+`score_per_point` is the accumulated run score required for one point. Each
+node has a unique `id`, `name`, optional `description`, graph
+coordinates (`x` and `y`, from 0 to 1000), a `size` (`small` or `large`), a
+`type` (`strength`, `dexterity`, `constitution`, `intelligence`, `perception`,
+or `charisma`), a positive `cost`, an optional `icon` for large nodes, an
+optional `requires` array of prerequisite node IDs, and one or more `effects`.
+The menu arranges nodes radially from their prerequisites; the `type` controls
+their color, with unlocked nodes shown in a stronger shade.
+
+Supported effects are `max_hp`, `max_mp`, `strength`, `dexterity`,
+`constitution`, `intelligence`, `perception`, `charisma`,
+`strength_skill_growth`, `dexterity_skill_growth`,
+`constitution_skill_growth`, `intelligence_skill_growth`,
+`perception_skill_growth`, `charisma_skill_growth`, `xp_growth`, `gold`,
+`magic_resistance`, `burning_resistance`, `poison_resistance`,
+`weight_reduction`, and `food_meat`. Each `*_skill_growth` effect adds its
+percentage chance of granting one extra proficiency point when an
+action-trained skill associated with that attribute increases, capped at 100%.
+For example:
+
+```json
+{
+  "stat": "max_hp",
+  "value": 1
+}
+```
+
+In the shipped tree, each small node grants one reward: about 70% grant growth
+(about 60% add +1% growth to action-trained skills and 10% add +1% level XP),
+20% grant +5 Max HP, and 10% grant +3 Max MP. Large reward nodes are spaced
+roughly every three small nodes and grant a primary stat point, starting gold,
+magic/burning/poison resistance, weight reduction, or fresh meat at the start
+of a run. The 1,259-node example divides the circle into six stat-colored
+regions, with short, branching paths that fill the interior. The main menu's
+**Roguelite Tree** entry appears when the feature is enabled.
+Player progress is stored in
+`savegames/roguelite_progress.json`; this file can be backed up or removed to
+reset the local progression.
+
+For multiplayer, all peers must use the same enabled tree configuration. The
+server validates node IDs, prerequisites, and point costs in a client's
+loadout, but cumulative local profile scores are client-provided and are not
+tamper-proof.
 
 # Linux Instructions
 

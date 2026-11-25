@@ -14,6 +14,7 @@
 #include "../stat.hpp"
 #include "../menu.hpp"
 #include "../scores.hpp"
+#include "../roguelite_progression.hpp"
 #include "../mod_tools.hpp"
 #include "../interface/interface.hpp"
 #include "../draw.hpp"
@@ -27,8 +28,13 @@
 #include "../book.hpp"
 #include "../scrolls.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <functional>
+#include <limits>
+#include <unordered_map>
 #ifdef STEAMWORKS
 #include <nfd.h>
 #endif
@@ -377,6 +383,7 @@ namespace MainMenu {
                 return layout.bindings;
             }
         }
+
         return defaultBindings[0].bindings; // Should be "Standard"
     }
 
@@ -938,6 +945,52 @@ namespace MainMenu {
 	static void mainReturnToHallofTrials(Button&);
 	static void mainQuitToMainMenu(Button&);
 	static void mainQuitToDesktop(Button&);
+	static void mainRogueliteTree(Button&);
+	static void closeRogueliteTree(Button&);
+	static void selectRogueliteNode(Button&);
+	static void purchaseRogueliteNode(Button&);
+	static void resetRogueliteTreeView(Button&);
+	static void updateRogueliteTreeView(Widget&);
+	static void applyRogueliteTreeView(Frame&);
+	struct RogueliteTreeNodePosition
+	{
+		double x = 0.0;
+		double y = 0.0;
+	};
+	static void calculateRogueliteTreeLayout(const std::vector<Roguelite::Node>&, int, int);
+	static void drawRogueliteConnections(const Widget&, const SDL_Rect);
+	static Uint32 rogueliteNodeColor(const Roguelite::Node&, bool);
+	static std::string rogueliteSelectedNode;
+	static std::string rogueliteTreeMessage;
+	static int rogueliteTreePlayer = 0;
+	static constexpr double rogueliteTreeDefaultZoom = 0.25;
+	static constexpr double rogueliteTreeRadiusScale = 3.0;
+	static constexpr double rogueliteTreeLayoutCoordinateScale = 3.0;
+	static constexpr double rogueliteTreeHubRadius = 12.0;
+	static constexpr double rogueliteTreeMinimumZoom = rogueliteTreeDefaultZoom / rogueliteTreeRadiusScale;
+	static constexpr double rogueliteTreeMaximumZoom = 8.0;
+	static constexpr Uint32 rogueliteTreeZoomRepeatDelay = 80;
+	static double rogueliteTreeZoom = rogueliteTreeDefaultZoom;
+	static double rogueliteTreeTargetZoom = rogueliteTreeDefaultZoom;
+	static double rogueliteTreeLayoutScaleX = 1.0;
+	static double rogueliteTreeLayoutScaleY = 1.0;
+	static bool rogueliteTreeZoomAnimating = false;
+	static Uint32 rogueliteTreeZoomLastUpdate = 0;
+	static Uint32 rogueliteTreeZoomRepeatAt = 0;
+	static int rogueliteTreeZoomInputDirection = 0;
+	static double rogueliteTreeZoomAnchorWorldX = 0.0;
+	static double rogueliteTreeZoomAnchorWorldY = 0.0;
+	static double rogueliteTreeZoomAnchorScreenX = 0.0;
+	static double rogueliteTreeZoomAnchorScreenY = 0.0;
+	static double rogueliteTreePanX = 0.0;
+	static double rogueliteTreePanY = 0.0;
+	static std::unordered_map<std::string, RogueliteTreeNodePosition> rogueliteTreeNodePositions;
+	static bool rogueliteTreeDragging = false;
+	static bool rogueliteTreeDragCandidate = false;
+	static bool rogueliteTreeDragReleasePending = false;
+	static bool rogueliteTreeLeftMouseDown = false;
+	static int rogueliteTreeLastMouseX = 0;
+	static int rogueliteTreeLastMouseY = 0;
 
 	static void characterCardGameFlagsMenu(int index);
 	static void characterCardLobbySettingsMenu(int index);
@@ -18405,7 +18458,7 @@ failed:
 			image->draw(nullptr, SDL_Rect{ x - w / 2, y - h / 2, w, h }, viewport);
 #else
 #ifdef STEAMWORKS
-            const bool steamdeck = SteamUtils()->IsSteamRunningOnSteamDeck();
+            const bool steamdeck = SteamUtils()->IsRunningOnSteamHardware() == k_ESteamHardwareTypeSteamDeck;
 #else
             constexpr bool steamdeck = false;
 #endif
@@ -24932,6 +24985,755 @@ failed:
 
 /******************************************************************************/
 
+	static void calculateRogueliteTreeLayout(const std::vector<Roguelite::Node>& nodes, const int width, const int height)
+	{
+		rogueliteTreeNodePositions.clear();
+		if ( nodes.empty() || width <= 0 || height <= 0 )
+		{
+			rogueliteTreeLayoutScaleX = 1.0;
+			rogueliteTreeLayoutScaleY = 1.0;
+			return;
+		}
+
+		const auto baseNodeSize = [](const Roguelite::Node& node) {
+			return node.large ? 62 : 44;
+		};
+		double maxExtentX = rogueliteTreeHubRadius;
+		double maxExtentY = rogueliteTreeHubRadius;
+		for ( const auto& node : nodes )
+		{
+			const double x = width / 2.0
+				+ (static_cast<double>(node.x) - 500.0) * rogueliteTreeLayoutCoordinateScale;
+			const double y = height / 2.0
+				+ (static_cast<double>(node.y) - 500.0) * rogueliteTreeLayoutCoordinateScale;
+			maxExtentX = std::max(maxExtentX,
+				std::abs(x - width / 2.0) + baseNodeSize(node) / 2.0);
+			maxExtentY = std::max(maxExtentY,
+				std::abs(y - height / 2.0) + baseNodeSize(node) / 2.0);
+			rogueliteTreeNodePositions.emplace(node.id, RogueliteTreeNodePosition{x, y});
+		}
+
+		constexpr double layoutFitFraction = 0.16;
+		const double layoutScaleX = width * layoutFitFraction
+			/ (maxExtentX * rogueliteTreeDefaultZoom);
+		const double layoutScaleY = height * layoutFitFraction
+			/ (maxExtentY * rogueliteTreeDefaultZoom);
+		const double layoutScale = std::min(layoutScaleX, layoutScaleY);
+		rogueliteTreeLayoutScaleX = layoutScale;
+		rogueliteTreeLayoutScaleY = layoutScale;
+	}
+
+	static void applyRogueliteTreeView(Frame& graph)
+	{
+		const SDL_Rect graphSize = graph.getSize();
+		const double effectiveZoomX = rogueliteTreeZoom * rogueliteTreeLayoutScaleX;
+		const double effectiveZoomY = rogueliteTreeZoom * rogueliteTreeLayoutScaleY;
+		const double nodeScale = rogueliteTreeZoom
+			* std::min(rogueliteTreeLayoutScaleX, rogueliteTreeLayoutScaleY)
+			* rogueliteTreeRadiusScale;
+		for ( const auto& node : Roguelite::nodes() )
+		{
+			auto button = graph.findButton(node.id.c_str());
+			if ( !button )
+			{
+				continue;
+			}
+			const auto position = rogueliteTreeNodePositions.find(node.id);
+			if ( position == rogueliteTreeNodePositions.end() )
+			{
+				continue;
+			}
+			const int baseSize = node.large ? 62 : 44;
+			const int x = static_cast<int>(std::lround(graphSize.w / 2.0
+				+ (position->second.x - graphSize.w / 2.0) * effectiveZoomX
+					* rogueliteTreeRadiusScale + rogueliteTreePanX));
+			const int y = static_cast<int>(std::lround(graphSize.h / 2.0
+				+ (position->second.y - graphSize.h / 2.0) * effectiveZoomY
+					* rogueliteTreeRadiusScale + rogueliteTreePanY));
+			const int size = static_cast<int>(std::lround(baseSize * nodeScale));
+			button->setSize(SDL_Rect{x - size / 2, y - size / 2, size, size});
+			button->setContentScale(nodeScale);
+			if ( !node.large )
+			{
+				button->setTextOffset(SDL_Rect{0, -2, 0, 0});
+			}
+		}
+	}
+
+	static void updateRogueliteTreeView(Widget& widget)
+	{
+		auto& graph = static_cast<Frame&>(widget);
+		if ( xres <= 0 || yres <= 0 )
+		{
+			return;
+		}
+		Input& input = Input::inputs[graph.getOwner()];
+		const SDL_Rect mouseInGraph = graph.getRelativeMousePosition(true);
+		const bool cursorOverGraph = mouseInGraph.w > 0 && mouseInGraph.h > 0;
+		const bool leftMouseDown = Input::mouseButtons[SDL_BUTTON_LEFT];
+		const int mouseX = inputs.getMouse(graph.getOwner(), Inputs::X)
+			* Frame::virtualScreenX / xres;
+		const int mouseY = inputs.getMouse(graph.getOwner(), Inputs::Y)
+			* Frame::virtualScreenY / yres;
+		bool viewChanged = false;
+
+		if ( cursorOverGraph && !rogueliteTreeDragging )
+		{
+			const bool zoomIn = input.binary("MenuMouseWheelUp");
+			const bool zoomOut = input.binary("MenuMouseWheelDown");
+			const int zoomDirection = zoomIn == zoomOut ? 0 : (zoomIn ? 1 : -1);
+			const Uint32 now = SDL_GetTicks();
+			double zoomFactor = 1.0;
+			if ( zoomDirection != 0
+				&& (zoomDirection != rogueliteTreeZoomInputDirection || now >= rogueliteTreeZoomRepeatAt) )
+			{
+				zoomFactor = zoomDirection > 0 ? 1.12 : 1.0 / 1.12;
+				rogueliteTreeZoomInputDirection = zoomDirection;
+				rogueliteTreeZoomRepeatAt = now + rogueliteTreeZoomRepeatDelay;
+			}
+			else if ( zoomDirection == 0 )
+			{
+				rogueliteTreeZoomInputDirection = 0;
+			}
+			if ( zoomFactor != 1.0 )
+			{
+				const double newTargetZoom = std::max(rogueliteTreeMinimumZoom,
+					std::min(rogueliteTreeMaximumZoom, rogueliteTreeTargetZoom * zoomFactor));
+				if ( newTargetZoom != rogueliteTreeTargetZoom )
+				{
+					const SDL_Rect graphSize = graph.getSize();
+					const double currentScaleX = rogueliteTreeZoom * rogueliteTreeLayoutScaleX;
+					const double currentScaleY = rogueliteTreeZoom * rogueliteTreeLayoutScaleY;
+					rogueliteTreeZoomAnchorWorldX = (mouseInGraph.x - graphSize.w / 2.0 - rogueliteTreePanX)
+						/ (currentScaleX * rogueliteTreeRadiusScale) + graphSize.w / 2.0;
+					rogueliteTreeZoomAnchorWorldY = (mouseInGraph.y - graphSize.h / 2.0 - rogueliteTreePanY)
+						/ (currentScaleY * rogueliteTreeRadiusScale) + graphSize.h / 2.0;
+					rogueliteTreeZoomAnchorScreenX = mouseInGraph.x;
+					rogueliteTreeZoomAnchorScreenY = mouseInGraph.y;
+					rogueliteTreeTargetZoom = newTargetZoom;
+					rogueliteTreeZoomAnimating = true;
+					rogueliteTreeZoomLastUpdate = SDL_GetTicks();
+				}
+			}
+		}
+		else
+		{
+			rogueliteTreeZoomInputDirection = 0;
+		}
+
+		if ( leftMouseDown && !rogueliteTreeLeftMouseDown && cursorOverGraph )
+		{
+			rogueliteTreeDragCandidate = true;
+			rogueliteTreeLastMouseX = mouseX;
+			rogueliteTreeLastMouseY = mouseY;
+		}
+
+		if ( rogueliteTreeDragCandidate && leftMouseDown && !rogueliteTreeDragging )
+		{
+			const int dragX = mouseX - rogueliteTreeLastMouseX;
+			const int dragY = mouseY - rogueliteTreeLastMouseY;
+			constexpr int dragThreshold = 4;
+			if ( dragX * dragX + dragY * dragY >= dragThreshold * dragThreshold )
+			{
+				rogueliteTreeDragCandidate = false;
+				rogueliteTreeZoomAnimating = false;
+				rogueliteTreeTargetZoom = rogueliteTreeZoom;
+				rogueliteTreeDragging = true;
+				for ( auto button : graph.getButtons() )
+				{
+					button->setDisabled(true);
+				}
+			}
+		}
+
+		if ( rogueliteTreeZoomAnimating && !rogueliteTreeDragging )
+		{
+			const Uint32 now = SDL_GetTicks();
+			const double elapsedSeconds = std::min(0.1,
+				static_cast<double>(now - rogueliteTreeZoomLastUpdate) / 1000.0);
+			rogueliteTreeZoomLastUpdate = now;
+			const double blend = 1.0 - std::exp(-20.0 * elapsedSeconds);
+			const double remainingZoom = rogueliteTreeTargetZoom - rogueliteTreeZoom;
+			if ( std::abs(remainingZoom) < 0.0005 )
+			{
+				rogueliteTreeZoom = rogueliteTreeTargetZoom;
+				rogueliteTreeZoomAnimating = false;
+			}
+			else
+			{
+				rogueliteTreeZoom += remainingZoom * blend;
+			}
+			const SDL_Rect graphSize = graph.getSize();
+			const double currentScaleX = rogueliteTreeZoom * rogueliteTreeLayoutScaleX;
+			const double currentScaleY = rogueliteTreeZoom * rogueliteTreeLayoutScaleY;
+			rogueliteTreePanX = rogueliteTreeZoomAnchorScreenX - graphSize.w / 2.0
+				- (rogueliteTreeZoomAnchorWorldX - graphSize.w / 2.0)
+					* currentScaleX * rogueliteTreeRadiusScale;
+			rogueliteTreePanY = rogueliteTreeZoomAnchorScreenY - graphSize.h / 2.0
+				- (rogueliteTreeZoomAnchorWorldY - graphSize.h / 2.0)
+					* currentScaleY * rogueliteTreeRadiusScale;
+			viewChanged = true;
+		}
+
+		if ( rogueliteTreeDragging )
+		{
+			if ( leftMouseDown )
+			{
+				rogueliteTreePanX += mouseX - rogueliteTreeLastMouseX;
+				rogueliteTreePanY += mouseY - rogueliteTreeLastMouseY;
+				rogueliteTreeLastMouseX = mouseX;
+				rogueliteTreeLastMouseY = mouseY;
+				viewChanged = true;
+			}
+			else
+			{
+				rogueliteTreeDragging = false;
+				rogueliteTreeDragCandidate = false;
+				rogueliteTreeDragReleasePending = true;
+			}
+		}
+		else if ( rogueliteTreeDragReleasePending )
+		{
+			for ( auto button : graph.getButtons() )
+			{
+				button->setDisabled(false);
+			}
+			rogueliteTreeDragReleasePending = false;
+		}
+		else if ( !leftMouseDown )
+		{
+			rogueliteTreeDragCandidate = false;
+		}
+
+		rogueliteTreeLeftMouseDown = leftMouseDown;
+		if ( viewChanged )
+		{
+			applyRogueliteTreeView(graph);
+		}
+	}
+
+	static void resetRogueliteTreeView(Button& button)
+	{
+		rogueliteTreeZoom = rogueliteTreeDefaultZoom;
+		rogueliteTreeTargetZoom = rogueliteTreeDefaultZoom;
+		rogueliteTreeZoomAnimating = false;
+		rogueliteTreeZoomInputDirection = 0;
+		rogueliteTreePanX = 0.0;
+		rogueliteTreePanY = 0.0;
+		if ( auto graph = static_cast<Frame*>(button.getParent()) )
+		{
+			applyRogueliteTreeView(*graph);
+		}
+	}
+
+	static void mainRogueliteTree(Button&)
+	{
+		if ( !main_menu_frame || !Roguelite::enabled() )
+		{
+			return;
+		}
+		soundActivate();
+		rogueliteTreePlayer = multiplayer == CLIENT ? clientnum : getMenuOwner();
+		if ( rogueliteTreePlayer < 0 || rogueliteTreePlayer >= MAXPLAYERS )
+		{
+			rogueliteTreePlayer = 0;
+		}
+		rogueliteSelectedNode = Roguelite::nodes().empty() ? "" : Roguelite::nodes().front().id;
+		rogueliteTreeMessage.clear();
+		rogueliteTreeZoom = rogueliteTreeDefaultZoom;
+		rogueliteTreeTargetZoom = rogueliteTreeDefaultZoom;
+		rogueliteTreeZoomAnimating = false;
+		rogueliteTreeZoomInputDirection = 0;
+		rogueliteTreePanX = 0.0;
+		rogueliteTreePanY = 0.0;
+		rogueliteTreeDragging = false;
+		rogueliteTreeDragCandidate = false;
+		rogueliteTreeDragReleasePending = false;
+		rogueliteTreeLeftMouseDown = Input::mouseButtons[SDL_BUTTON_LEFT];
+
+		if ( auto buttons = main_menu_frame->findFrame("buttons") )
+		{
+			buttons->setInvisible(true);
+		}
+		if ( auto title = main_menu_frame->findImage("title") )
+		{
+			title->disabled = true;
+		}
+		if ( auto notification = main_menu_frame->findFrame("notification") )
+		{
+			notification->setInvisible(true);
+		}
+
+		auto overlay = main_menu_frame->addFrame("roguelite_tree");
+		overlay->setSize(SDL_Rect{0, 0, Frame::virtualScreenX, Frame::virtualScreenY});
+		overlay->setActualSize(SDL_Rect{0, 0, Frame::virtualScreenX, Frame::virtualScreenY});
+		overlay->setBorder(0);
+		overlay->setColor(makeColor(0, 0, 0, 224));
+
+		const int width = std::min(1160, Frame::virtualScreenX - 40);
+		const int height = std::min(680, Frame::virtualScreenY - 40);
+		auto panel = overlay->addFrame("tree_panel");
+		panel->setSize(SDL_Rect{(Frame::virtualScreenX - width) / 2, (Frame::virtualScreenY - height) / 2, width, height});
+		panel->setActualSize(SDL_Rect{0, 0, width, height});
+		panel->setTickCallback([](Widget& widget) {
+			auto& panel = static_cast<Frame&>(widget);
+			Button* purchase = panel.findButton("purchase_node");
+			if ( !purchase )
+			{
+				return;
+			}
+			const Roguelite::Node* node = Roguelite::findNode(rogueliteSelectedNode);
+			const bool unlocked = node && Roguelite::isUnlocked(rogueliteTreePlayer, node->id);
+			const Uint32 unlockedColor = makeColor(48, 128, 64, 255);
+			purchase->setText(unlocked ? "Unlocked" : "Unlock selected node");
+			purchase->setDisabled(unlocked);
+			purchase->setColor(unlocked ? unlockedColor : makeColor(127, 127, 127, 255));
+			purchase->setHighlightColor(unlocked ? unlockedColor : makeColor(255, 255, 255, 255));
+			purchase->setTextColor(unlocked ? makeColorRGB(220, 255, 220) : makeColorRGB(255, 255, 255));
+		});
+		panel->setBorder(2);
+		panel->setBorderColor(makeColor(151, 115, 58, 255));
+		panel->setColor(makeColor(24, 20, 17, 246));
+
+		auto back = createBackWidget(panel, closeRogueliteTree);
+		back->setWidgetSearchParent("tree_panel");
+		back->select();
+
+		auto title = panel->addField("tree_title", 64);
+		title->setSize(SDL_Rect{100, 8, width - 200, 36});
+		title->setFont(menu_option_font);
+		title->setJustify(Field::justify_t::CENTER);
+		title->setText("Roguelite Skill Tree");
+
+		auto points = panel->addField("tree_points", 128);
+		points->setSize(SDL_Rect{28, 54, width - 56, 24});
+		points->setFont(smallfont_outline);
+		points->setJustify(Field::justify_t::CENTER);
+		points->setTickCallback([](Widget& widget) {
+			auto& field = static_cast<Field&>(widget);
+			char text[192];
+			const uint64_t lifetimeScore = Roguelite::lifetimeScore(rogueliteTreePlayer);
+			const uint64_t scoreToNextPoint = Roguelite::scoreToNextPoint(rogueliteTreePlayer);
+			snprintf(text, sizeof(text), "Lifetime score: %llu    Next point in: %llu score    Available points: %d    Wheel: zoom | Drag to pan",
+				static_cast<unsigned long long>(lifetimeScore),
+				static_cast<unsigned long long>(scoreToNextPoint),
+				Roguelite::availablePoints(rogueliteTreePlayer));
+			field.setText(text);
+		});
+
+		const int graphX = 28;
+		const int graphY = 96;
+		const int graphWidth = width - 390;
+		const int graphHeight = height - 132;
+		auto graph = panel->addFrame("tree_graph");
+		graph->setSize(SDL_Rect{graphX, graphY, graphWidth, graphHeight});
+		graph->setActualSize(SDL_Rect{0, 0, graphWidth, graphHeight});
+		graph->setBorder(1);
+		graph->setBorderColor(makeColor(96, 75, 50, 255));
+		graph->setColor(makeColor(10, 9, 8, 200));
+		graph->setOwner(rogueliteTreePlayer);
+		graph->setAllowScrollBinds(false);
+		graph->setScrollBarsEnabled(false);
+		graph->setTickCallback(updateRogueliteTreeView);
+
+		auto connections = graph->addFrame("tree_connections");
+		connections->setSize(SDL_Rect{0, 0, graphWidth, graphHeight});
+		connections->setActualSize(SDL_Rect{0, 0, graphWidth, graphHeight});
+		connections->setBorder(0);
+		connections->setColor(makeColor(0, 0, 0, 0));
+		connections->setDrawCallback(drawRogueliteConnections);
+
+		const auto& nodes = Roguelite::nodes();
+		calculateRogueliteTreeLayout(nodes, graphWidth, graphHeight);
+		Item foodIconItem{};
+		foodIconItem.type = FOOD_MEAT;
+		foodIconItem.appearance = 0;
+		const std::string foodIconPath = getItemSpritePath(rogueliteTreePlayer, foodIconItem);
+		for ( size_t i = 0; i < nodes.size(); ++i )
+		{
+			const auto& node = nodes[i];
+			const int size = node.large ? 76 : 54;
+			const int x = 28 + node.x * std::max(1, graphWidth - 56) / 1000;
+			const int y = 28 + node.y * std::max(1, graphHeight - 56) / 1000;
+			auto button = graph->addButton(node.id.c_str());
+			button->setSize(SDL_Rect{x - size / 2, y - size / 2, size, size});
+			button->setOntop(true);
+			button->setBackground("*images/ui/Main Menus/Play/PlayerCreation/LobbySettings/Fill_Round_00.png");
+			button->setBorder(0);
+			button->setText(node.large ? "" : "+");
+			button->setFont(bigfont_outline);
+			button->setCallback(selectRogueliteNode);
+			button->setHighlightColor(makeColor(255, 255, 255, 255));
+			if ( node.large )
+			{
+				std::string iconPath;
+				if ( node.icon == "strength" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_STR_00.png";
+				}
+				else if ( node.icon == "dexterity" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_DEX_00.png";
+				}
+				else if ( node.icon == "constitution" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_CON_00.png";
+				}
+				else if ( node.icon == "intelligence" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_INT_00.png";
+				}
+				else if ( node.icon == "perception" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_PER_00.png";
+				}
+				else if ( node.icon == "charisma" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_CHA_00.png";
+				}
+				else if ( node.icon == "gold" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_ButtonMoney_00.png";
+				}
+				else if ( node.icon == "magic_resistance" || node.icon == "burning_resistance"
+					|| node.icon == "poison_resistance" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_RES_00.png";
+				}
+				else if ( node.icon == "weight_reduction" )
+				{
+					iconPath = "*#images/ui/CharSheet/HUD_CharSheet_WGT_00.png";
+				}
+				else if ( node.icon == "food_meat" )
+				{
+					iconPath = foodIconPath;
+				}
+				button->setIcon(iconPath.c_str());
+			}
+			button->setTickCallback([](Widget& widget) {
+				auto* nodeButton = static_cast<Button*>(&widget);
+				const Roguelite::Node* node = Roguelite::findNode(nodeButton->getName());
+				if ( !node )
+				{
+					return;
+				}
+				const bool unlocked = Roguelite::isUnlocked(rogueliteTreePlayer, node->id);
+				const Uint32 color = rogueliteNodeColor(*node, unlocked);
+				nodeButton->setColor(color);
+				nodeButton->setHighlightColor(color);
+				nodeButton->setTextColor(unlocked ? makeColorRGB(255, 255, 255) : makeColorRGB(224, 224, 224));
+				nodeButton->setTextHighlightColor(nodeButton->getTextColor());
+				nodeButton->setIconColor(unlocked ? makeColorRGB(255, 255, 255) : makeColorRGB(200, 200, 200));
+			});
+			if ( i > 0 )
+			{
+				button->setWidgetLeft(nodes[i - 1].id.c_str());
+				button->setWidgetUp(nodes[i - 1].id.c_str());
+			}
+			if ( i + 1 < nodes.size() )
+			{
+				button->setWidgetRight(nodes[i + 1].id.c_str());
+				button->setWidgetDown(nodes[i + 1].id.c_str());
+			}
+			else
+			{
+				button->setWidgetDown("purchase_node");
+			}
+			button->setWidgetBack("back_button");
+			if ( i == 0 )
+			{
+				button->select();
+			}
+		}
+
+		auto resetView = graph->addButton("tree_reset_view");
+		resetView->setSize(SDL_Rect{graphWidth - 92, 4, 84, 26});
+		resetView->setText("Reset view");
+		resetView->setFont(smallfont_outline);
+		resetView->setCallback(resetRogueliteTreeView);
+		applyRogueliteTreeView(*graph);
+
+		const int detailX = graphX + graphWidth + 18;
+		auto details = panel->addField("node_details", 768);
+		details->setSize(SDL_Rect{detailX, graphY + 8, width - detailX - 24, graphHeight - 78});
+		details->setFont(smallfont_outline);
+		details->setTickCallback([](Widget& widget) {
+			auto& field = static_cast<Field&>(widget);
+			const Roguelite::Node* node = Roguelite::findNode(rogueliteSelectedNode);
+			char text[768];
+			if ( !node )
+			{
+				snprintf(text, sizeof(text), "Select a node.");
+			}
+			else
+			{
+				snprintf(text, sizeof(text), "%s\n\nPoints required to unlock: %d\n\n%s",
+					node->description.c_str(), node->cost, rogueliteTreeMessage.c_str());
+			}
+			field.setText(text);
+			field.reflowTextToFit(0);
+		});
+
+		auto purchase = panel->addButton("purchase_node");
+		purchase->setSize(SDL_Rect{detailX, graphY + graphHeight - 58, width - detailX - 24, 44});
+		purchase->setText("Unlock selected node");
+		purchase->setFont(smallfont_outline);
+		purchase->setCallback(purchaseRogueliteNode);
+		purchase->setWidgetUp(nodes.empty() ? "back_button" : nodes.front().id.c_str());
+		purchase->setWidgetBack("back_button");
+	}
+
+	static void closeRogueliteTree(Button&)
+	{
+		soundCancel();
+		if ( !main_menu_frame )
+		{
+			return;
+		}
+		if ( auto overlay = main_menu_frame->findFrame("roguelite_tree") )
+		{
+			overlay->removeSelf();
+		}
+		if ( auto buttons = main_menu_frame->findFrame("buttons") )
+		{
+			buttons->setInvisible(false);
+			if ( auto treeButton = buttons->findButton("Roguelite Tree") )
+			{
+				treeButton->select();
+			}
+		}
+		if ( auto title = main_menu_frame->findImage("title") )
+		{
+			title->disabled = false;
+		}
+		if ( auto notification = main_menu_frame->findFrame("notification") )
+		{
+			notification->setInvisible(false);
+		}
+	}
+
+	static void selectRogueliteNode(Button& button)
+	{
+		rogueliteSelectedNode = button.getName();
+		rogueliteTreeMessage.clear();
+		soundActivate();
+	}
+
+	static void purchaseRogueliteNode(Button&)
+	{
+		if ( Roguelite::purchase(rogueliteTreePlayer, rogueliteSelectedNode) )
+		{
+			rogueliteTreeMessage = "Node unlocked.";
+			soundActivate();
+		}
+		else
+		{
+			rogueliteTreeMessage = "Not enough points or prerequisites are missing.";
+			soundError();
+		}
+	}
+
+	static void drawRogueliteConnections(const Widget& widget, const SDL_Rect)
+	{
+		if ( Frame::virtualScreenX <= 0 || Frame::virtualScreenY <= 0 )
+		{
+			return;
+		}
+		const double resolutionScaleX = static_cast<double>(xres) / Frame::virtualScreenX;
+		const double resolutionScaleY = static_cast<double>(yres) / Frame::virtualScreenY;
+		const auto* graph = static_cast<const Frame*>(widget.getParent());
+		if ( !graph )
+		{
+			return;
+		}
+		const SDL_Rect graphBounds = graph->getAbsoluteSize();
+		const double centerX = graphBounds.x + graphBounds.w / 2.0 + rogueliteTreePanX;
+		const double centerY = graphBounds.y + graphBounds.h / 2.0 + rogueliteTreePanY;
+		const double hubRadius = rogueliteTreeHubRadius * rogueliteTreeZoom
+			* std::min(rogueliteTreeLayoutScaleX, rogueliteTreeLayoutScaleY)
+			* rogueliteTreeRadiusScale;
+		std::unordered_map<std::string, SDL_Rect> nodeButtonBounds;
+		for ( const Widget* child : graph->getWidgets() )
+		{
+			if ( child->getType() == Widget::WIDGET_BUTTON )
+			{
+				const auto* button = static_cast<const Button*>(child);
+				nodeButtonBounds.emplace(button->getName(), button->getAbsoluteSize());
+			}
+		}
+
+		const auto edgeScale = [](const SDL_Rect& bounds, const double dx, const double dy) {
+			const double distance = std::hypot(dx, dy);
+			return distance > 0.0 ? (std::min(bounds.w, bounds.h) / 2.0) / distance : 0.0;
+		};
+
+		const auto& nodes = Roguelite::nodes();
+		const Uint32 unlockedConnectionColor = makeColorRGB(255, 232, 184);
+		const Uint32 lockedConnectionColor = makeColorRGB(230, 199, 153);
+		const double resolutionScale = (resolutionScaleX + resolutionScaleY) / 2.0;
+		const int lineHalfWidth = std::max(1, static_cast<int>(std::lround(1.5 * resolutionScale)));
+		const double clipLeft = graphBounds.x * resolutionScaleX + lineHalfWidth;
+		const double clipTop = graphBounds.y * resolutionScaleY + lineHalfWidth;
+		const double clipRight = (graphBounds.x + graphBounds.w) * resolutionScaleX - lineHalfWidth;
+		const double clipBottom = (graphBounds.y + graphBounds.h) * resolutionScaleY - lineHalfWidth;
+		const auto clipBoundary = [](const double p, const double q, double& t0, double& t1) {
+			if ( p == 0.0 )
+			{
+				return q >= 0.0;
+			}
+			const double ratio = q / p;
+			if ( p < 0.0 )
+			{
+				if ( ratio > t1 )
+				{
+					return false;
+				}
+				t0 = std::max(t0, ratio);
+			}
+			else
+			{
+				if ( ratio < t0 )
+				{
+					return false;
+				}
+				t1 = std::min(t1, ratio);
+			}
+			return true;
+		};
+		const auto drawConnection = [lineHalfWidth, clipLeft, clipTop, clipRight, clipBottom, clipBoundary](
+			const int x1, const int y1, const int x2, const int y2,
+			const Uint32 color) {
+			const double startX = x1;
+			const double startY = y1;
+			const double segmentX = x2 - startX;
+			const double segmentY = y2 - startY;
+			double t0 = 0.0;
+			double t1 = 1.0;
+			if ( !clipBoundary(-segmentX, startX - clipLeft, t0, t1)
+				|| !clipBoundary(segmentX, clipRight - startX, t0, t1)
+				|| !clipBoundary(-segmentY, startY - clipTop, t0, t1)
+				|| !clipBoundary(segmentY, clipBottom - startY, t0, t1) )
+			{
+				return;
+			}
+			const int clippedX1 = static_cast<int>(std::lround(startX + t0 * segmentX));
+			const int clippedY1 = static_cast<int>(std::lround(startY + t0 * segmentY));
+			const int clippedX2 = static_cast<int>(std::lround(startX + t1 * segmentX));
+			const int clippedY2 = static_cast<int>(std::lround(startY + t1 * segmentY));
+			const double dx = clippedX2 - clippedX1;
+			const double dy = clippedY2 - clippedY1;
+			const double length = std::hypot(dx, dy);
+			if ( length == 0.0 )
+			{
+				drawLine(clippedX1, clippedY1, clippedX2, clippedY2, color, 255);
+				return;
+			}
+			for ( int offset = -lineHalfWidth; offset <= lineHalfWidth; ++offset )
+			{
+				const int offsetX = static_cast<int>(std::lround(-dy * offset / length));
+				const int offsetY = static_cast<int>(std::lround(dx * offset / length));
+				drawLine(clippedX1 + offsetX, clippedY1 + offsetY, clippedX2 + offsetX, clippedY2 + offsetY,
+					color, 255);
+			}
+		};
+		for ( const auto& node : nodes )
+		{
+			const auto nodeBoundsEntry = nodeButtonBounds.find(node.id);
+			if ( nodeBoundsEntry == nodeButtonBounds.end() )
+			{
+				continue;
+			}
+			const SDL_Rect& nodeBounds = nodeBoundsEntry->second;
+			const int x1 = nodeBounds.x + nodeBounds.w / 2;
+			const int y1 = nodeBounds.y + nodeBounds.h / 2;
+			if ( node.prerequisites.empty() )
+			{
+				const double dx = x1 - centerX;
+				const double dy = y1 - centerY;
+				const double distance = std::hypot(dx, dy);
+				if ( distance > hubRadius )
+				{
+					const double nodeScale = edgeScale(nodeBounds, dx, dy);
+					const Uint32 color = Roguelite::isUnlocked(rogueliteTreePlayer, node.id)
+						? unlockedConnectionColor : lockedConnectionColor;
+					drawConnection(
+						static_cast<int>((centerX + dx * hubRadius / distance) * resolutionScaleX),
+						static_cast<int>((centerY + dy * hubRadius / distance) * resolutionScaleY),
+						static_cast<int>((x1 - dx * nodeScale) * resolutionScaleX),
+						static_cast<int>((y1 - dy * nodeScale) * resolutionScaleY),
+						color);
+				}
+			}
+			for ( const auto& prerequisite : node.prerequisites )
+			{
+				const auto prerequisiteBoundsEntry = nodeButtonBounds.find(prerequisite);
+				if ( prerequisiteBoundsEntry == nodeButtonBounds.end() )
+				{
+					continue;
+				}
+				const SDL_Rect& prerequisiteBounds = prerequisiteBoundsEntry->second;
+				const int x2 = prerequisiteBounds.x + prerequisiteBounds.w / 2;
+				const int y2 = prerequisiteBounds.y + prerequisiteBounds.h / 2;
+				const int dx = x2 - x1;
+				const int dy = y2 - y1;
+				const double nodeScale = edgeScale(nodeBounds, dx, dy);
+				const double prerequisiteScale = edgeScale(prerequisiteBounds, dx, dy);
+				if ( nodeScale + prerequisiteScale >= 1.0 )
+				{
+					continue;
+				}
+				const Uint32 color = Roguelite::isUnlocked(rogueliteTreePlayer, node.id)
+					? unlockedConnectionColor : lockedConnectionColor;
+				drawConnection(
+					static_cast<int>((x1 + dx * nodeScale) * resolutionScaleX),
+					static_cast<int>((y1 + dy * nodeScale) * resolutionScaleY),
+					static_cast<int>((x2 - dx * prerequisiteScale) * resolutionScaleX),
+					static_cast<int>((y2 - dy * prerequisiteScale) * resolutionScaleY),
+					color);
+			}
+		}
+
+		constexpr int circleSegments = 32;
+		const Uint32 hubColor = unlockedConnectionColor;
+		for ( int i = 0; i < circleSegments; ++i )
+		{
+			const double angle1 = 2.0 * 3.14159265358979323846 * i / circleSegments;
+			const double angle2 = 2.0 * 3.14159265358979323846 * (i + 1) / circleSegments;
+			drawConnection(
+				static_cast<int>((centerX + hubRadius * std::cos(angle1)) * resolutionScaleX),
+				static_cast<int>((centerY + hubRadius * std::sin(angle1)) * resolutionScaleY),
+				static_cast<int>((centerX + hubRadius * std::cos(angle2)) * resolutionScaleX),
+				static_cast<int>((centerY + hubRadius * std::sin(angle2)) * resolutionScaleY),
+				hubColor);
+		}
+	}
+
+	static Uint32 rogueliteNodeColor(const Roguelite::Node& node, const bool unlocked)
+	{
+		struct NodeColor
+		{
+			const char* type;
+			Uint32 color;
+			Uint32 lockedColor;
+		};
+		static const NodeColor colors[] = {
+			{"strength", makeColorRGB(220, 48, 48), makeColorRGB(171, 137, 137)},
+			{"dexterity", makeColorRGB(49, 194, 87), makeColorRGB(142, 175, 150)},
+			{"constitution", makeColorRGB(220, 133, 45), makeColorRGB(178, 157, 136)},
+			{"intelligence", makeColorRGB(56, 116, 235), makeColorRGB(139, 158, 194)},
+			{"perception", makeColorRGB(220, 195, 50), makeColorRGB(178, 174, 135)},
+			{"charisma", makeColorRGB(180, 77, 205), makeColorRGB(163, 141, 171)}
+		};
+		for ( const auto& color : colors )
+		{
+			if ( node.type == color.type )
+			{
+				return unlocked ? color.color : color.lockedColor;
+			}
+		}
+		return makeColorRGB(150, 150, 150);
+	}
+
 	static void mainPlayGame(Button& button) {
 		soundActivate();
 		createPlayWindow();
@@ -27027,6 +27829,12 @@ failed:
 #endif
 				});
 			}
+		}
+
+		if ( !ingame && Roguelite::enabled() && !options.empty() )
+		{
+			options.insert(options.begin() + 1,
+				Option{"Roguelite Tree", "Roguelite Skill Tree", mainRogueliteTree});
 		}
 
 		const int num_options = (int)options.size();
@@ -31003,7 +31811,7 @@ failed:
 			button->setBackground("*#images/ui/Main Menus/Mods/Upload/Button_00.png");
 			button->setBackgroundHighlighted("*#images/ui/Main Menus/Mods/Upload/Button_High00.png");
 			button->setBackgroundActivated("*#images/ui/Main Menus/Mods/Upload/Button_Press00.png");
-            if (SteamUtils()->IsSteamRunningOnSteamDeck()) {
+            if (SteamUtils()->IsRunningOnSteamHardware() == k_ESteamHardwareTypeSteamDeck) {
                 button->setTextColor(makeColorRGB(127, 127, 127));
                 button->setHighlightColor(makeColorRGB(127, 127, 127));
                 button->setColor(makeColorRGB(127, 127, 127));
@@ -31087,7 +31895,7 @@ failed:
 				}
 			});
 			button->setCallback([](Button& button) {
-                if (SteamUtils()->IsSteamRunningOnSteamDeck()) {
+                if (SteamUtils()->IsRunningOnSteamHardware() == k_ESteamHardwareTypeSteamDeck) {
                     soundError();
                     return;
                 }
@@ -31095,7 +31903,6 @@ failed:
 				
 				nfdchar_t* outPath = NULL;
 				
-				char path[PATH_MAX];
 				nfdresult_t result = NFD_OKAY;
 
 				std::string modsPath = "";
@@ -31107,20 +31914,21 @@ failed:
 				}
 				if ( modsPath != "" )
 				{
-					result = NFD_PickFolder(modsPath.c_str(), &outPath);
+					result = NFD_PickFolder(&outPath, modsPath.c_str());
 				}
 				else
 				{
-					result = NFD_PickFolder(outputdir, &outPath); // hopefully this is absolute path?
+					result = NFD_PickFolder(&outPath, outputdir); // hopefully this is absolute path?
 				}
 				if ( result == NFD_ERROR )
 				{
-					result = NFD_PickFolder(PHYSFS_getBaseDir(), &outPath); // fallback path
+					result = NFD_PickFolder(&outPath, PHYSFS_getBaseDir()); // fallback path
 				}
 
 				if ( result == NFD_OKAY )
 				{
 					modFolderPathToUpload = outPath;
+					NFD_FreePath(outPath);
 					bool fail = true;
 					std::size_t found = modFolderPathToUpload.find_last_of("/\\");
 					if ( found != std::string::npos )

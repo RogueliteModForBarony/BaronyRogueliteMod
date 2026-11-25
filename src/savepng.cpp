@@ -67,7 +67,7 @@ SDL_Surface* SDL_PNGFormatAlpha(SDL_Surface* src)
 	/* NO-OP for images < 32bpp and 32bpp images that already have Alpha channel */
 	if (src->format->BitsPerPixel <= 24 || src->format->Amask)
 	{
-		src->userdata = (void *)((long int)src->userdata + 1);
+		src->userdata = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(src->userdata) + 1);
 		return src;
 	}
 

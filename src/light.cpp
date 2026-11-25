@@ -230,23 +230,23 @@ bool loadLights(bool forceLoadBaseDirectory) {
     
     const auto& lights = d["lights"];
     if (lights.IsObject()) {
-        for (const auto& it : lights.GetObject()) {
+        for (auto it = lights.MemberBegin(); it != lights.MemberEnd(); ++it) {
             LightDef def;
-            const auto& name = it.name.GetString();
-            const auto& radius = it.value["radius"]; def.radius = radius.GetInt();
-            const auto& r = it.value["r"]; def.r = r.GetFloat();
-            const auto& g = it.value["g"]; def.g = g.GetFloat();
-            const auto& b = it.value["b"]; def.b = b.GetFloat();
-            if ( it.value.HasMember("a") )
+            const auto& name = it->name.GetString();
+            const auto& radius = it->value["radius"]; def.radius = radius.GetInt();
+            const auto& r = it->value["r"]; def.r = r.GetFloat();
+            const auto& g = it->value["g"]; def.g = g.GetFloat();
+            const auto& b = it->value["b"]; def.b = b.GetFloat();
+            if ( it->value.HasMember("a") )
             {
-                def.a = it.value["a"].GetFloat();
+                def.a = it->value["a"].GetFloat();
             }
             else
             {
                 def.a = 0.f;
             }
-            const auto& exp = it.value["falloff_exp"]; def.falloff_exp = exp.GetFloat();
-            const auto& shadows = it.value["shadows"]; def.shadows = shadows.GetBool();
+            const auto& exp = it->value["falloff_exp"]; def.falloff_exp = exp.GetFloat();
+            const auto& shadows = it->value["shadows"]; def.shadows = shadows.GetBool();
             lightDefs[name] = def;
         }
     }

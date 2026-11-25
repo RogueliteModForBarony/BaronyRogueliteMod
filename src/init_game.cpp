@@ -21,6 +21,7 @@
 #include "engine/audio/sound.hpp"
 #include "shops.hpp"
 #include "scores.hpp"
+#include "roguelite_progression.hpp"
 #include "magic/magic.hpp"
 #include "monster.hpp"
 #include "net.hpp"
@@ -73,6 +74,7 @@ void initGameDatafiles(bool moddedReload)
 
 	loadHUDSettingsJSON();
 	Player::SkillSheet_t::loadSkillSheetJSON();
+	Roguelite::initialize();
 	Player::CharacterSheet_t::loadCharacterSheetJSON();
 	StatusEffectQueue_t::loadStatusEffectsJSON();
 	FollowerRadialMenu::loadFollowerJSON();
@@ -902,14 +904,14 @@ void loadAchievementData(const char* path) {
 		printlog("[JSON]: Error: could not parse %s", path);
 		return;
 	}
-	const auto& achievements = d["achievements"].GetObject();
+	const auto& achievements = d["achievements"];
 
-	for (const auto& it : achievements) {
-		if (!it.name.IsString()) {
+	for (auto it = achievements.MemberBegin(); it != achievements.MemberEnd(); ++it) {
+		if (!it->name.IsString()) {
 			printlog("[JSON]: Error: could not parse %s", path);
 			return;
 		}
-		auto achName = it.name.GetString();
+		auto achName = it->name.GetString();
 #ifdef NINTENDO
 		if ( !strcmp(achName, "BARONY_ACH_LOCAL_CUSTOMS") )
 		{
@@ -944,7 +946,7 @@ void loadAchievementData(const char* path) {
 			continue;
 		}
 #endif
-		const auto& ach = it.value.GetObject();
+		const auto& ach = it->value;
 		auto& achData = Compendium_t::achievements[achName];
 		if (ach.HasMember("name") && ach["name"].IsString()) {
 			achData.name = ach["name"].GetString();

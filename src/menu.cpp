@@ -27,6 +27,7 @@
 #include "shops.hpp"
 #include "monster.hpp"
 #include "scores.hpp"
+#include "roguelite_progression.hpp"
 #include "menu.hpp"
 #include "net.hpp"
 #ifdef STEAMWORKS
@@ -8575,6 +8576,37 @@ void doQuitGame() {
 	mainloop = 0;
 }
 
+static void awardRogueliteProgress(bool award, bool localScores)
+{
+	if ( !award || !localScores || !Roguelite::enabled() || currentlevel <= 0 || multiplayer == CLIENT )
+	{
+		return;
+	}
+
+	for ( int player = 0; player < MAXPLAYERS; ++player )
+	{
+		if ( client_disconnected[player] || !stats[player] || !players[player] )
+		{
+			continue;
+		}
+		score_t* runScore = scoreConstructor(player);
+		const int score = totalScore(runScore);
+		scoreDeconstructor(runScore);
+		if ( score < 0 )
+		{
+			continue;
+		}
+		if ( multiplayer == SERVER && player > 0 && !players[player]->isLocalPlayer() )
+		{
+			serverSendRogueliteReward(player, static_cast<uint64_t>(score));
+		}
+		else
+		{
+			Roguelite::awardRunScore(player, score);
+		}
+	}
+}
+
 void doNewGame(bool makeHighscore) {
 	bool bWasOnMainMenu = intro;
 	introstage = 1;
@@ -8628,6 +8660,7 @@ void doNewGame(bool makeHighscore) {
             }
             saveAllScores(SCORESFILE);
             saveAllScores(SCORESFILE_MULTIPLAYER);
+			awardRogueliteProgress(true, localScores);
 		}
 	}
 
@@ -8644,6 +8677,8 @@ void doNewGame(bool makeHighscore) {
 
 	// undo shopkeeper grudge
 	ShopkeeperPlayerHostility.reset();
+
+	Roguelite::beginRun();
 
 	// setup game //TODO: Move into a function startGameStuff() or something.
 	ticks = 0;
@@ -8972,11 +9007,19 @@ void doNewGame(bool makeHighscore) {
 					GenericGUI[c].assistShrineGUI.onGameStart();
 					stats[c]->clearStats();
 					initClass(c);
+					if ( players[c]->isLocalPlayer() )
+					{
+						Roguelite::applyPlayerBonuses(c);
+					}
 				}
 				else
 				{
 					GenericGUI[c].assistShrineGUI.resetSavedCharacterChanges();
 				}
+			}
+			if ( !loadingsavegame && multiplayer == CLIENT )
+			{
+				clientSendRogueliteLoadout();
 			}
 		}
 
@@ -9883,6 +9926,7 @@ void doEndgame(bool saveHighscore, bool onServerDisconnect) {
         }
         saveAllScores(SCORESFILE);
         saveAllScores(SCORESFILE_MULTIPLAYER);
+		awardRogueliteProgress(true, localScores);
 	}
 
 	for ( c = 0; c < NUMMONSTERS; c++ )

@@ -2461,7 +2461,7 @@ Increases the given skill of the given entity by 1.
 
 -------------------------------------------------------------------------------*/
 
-bool Entity::increaseSkill(int skill, bool notify)
+bool Entity::increaseSkill(int skill, bool notify, bool applyRogueliteGrowth)
 {
 	Stat* myStats = this->getStats();
 	int player = -1;
@@ -2759,6 +2759,17 @@ bool Entity::increaseSkill(int skill, bool notify)
 		net_packet->address.port = net_clients[player - 1].port;
 		net_packet->len = 21;
 		sendPacketSafe(net_sock, -1, net_packet, player - 1);
+	}
+
+	if ( increased && myStats->getProficiency(skill) < 100
+		&& applyRogueliteGrowth && player >= 0 && multiplayer != CLIENT
+		&& statBonusSkill >= STAT_STR )
+	{
+		const int growthPercent = std::min(100, std::max(0, myStats->rogueliteSkillGrowthPercent[statBonusSkill]));
+		if ( growthPercent > 0 && local_rng.rand() % 100 < growthPercent )
+		{
+			this->increaseSkill(skill, false, false);
+		}
 	}
 
 	return increased;
@@ -6545,6 +6556,8 @@ void Entity::handleEffects(Stat* myStats)
 			{
 				poisonhurt -= local_rng.rand() % (std::max(1, poisonhurt / 4));
 			}
+			const int poisonResistance = std::min(100, std::max(0, myStats->roguelitePoisonResistancePercent));
+			poisonhurt = std::max(1, (poisonhurt * (100 - poisonResistance) + 50) / 100);
 			this->modHP(-poisonhurt);
 			for ( int tmp = 0; tmp < 3; ++tmp )
 			{
@@ -7389,6 +7402,8 @@ void Entity::handleEffects(Stat* myStats)
 				if ( buddhamode )
 				{
 					Sint32 fireDamage = (-2 - local_rng.rand() % 3); // Deal between -2 to -5 damage
+					const int fireResistance = std::min(100, std::max(0, myStats->rogueliteBurningResistancePercent));
+					fireDamage = -std::max(1, ((-fireDamage) * (100 - fireResistance) + 50) / 100);
 
 					// Fire damage is negative, so it needs to be added
 					if ( myStats->HP + fireDamage > 0 )
@@ -7465,6 +7480,11 @@ void Entity::handleEffects(Stat* myStats)
 						}
 					}
 					damage *= fireMultiplier;
+					if ( damage < 0 )
+					{
+						const int fireResistance = std::min(100, std::max(0, myStats->rogueliteBurningResistancePercent));
+						damage = -std::max(1, ((-damage) * (100 - fireResistance) + 50) / 100);
+					}
 
 					this->modHP(damage); // Deal between -2 to -5 damage
 
@@ -18140,6 +18160,12 @@ void Entity::awardXP(Entity* src, bool share, bool root)
 					}
 				}
 			}
+		}
+
+		if ( behavior == &actPlayer && destStats->rogueliteXpGrowthPercent > 0 )
+		{
+			const int growthPercent = std::min(1000, destStats->rogueliteXpGrowthPercent);
+			gain = static_cast<int>((static_cast<int64_t>(gain) * (100 + growthPercent) + 50) / 100);
 		}
 
 		if ( behavior == &actPlayer )
@@ -31124,6 +31150,12 @@ real_t Entity::getDamageTableMultiplier(Entity* my, Stat& myStats, DamageTableTy
 	{
 		int resistance = magicResistance ? *magicResistance : Entity::getMagicResistance(&myStats);
 		for ( int i = 0; i < resistance; ++i, allBonuses.push_back(-Entity::magicResistancePerPoint) ) {}
+		const int rogueliteResistance = std::min(100,
+			std::max(0, myStats.rogueliteMagicResistancePercent));
+		if ( rogueliteResistance > 0 )
+		{
+			allBonuses.push_back(-rogueliteResistance / 100.0);
+		}
 	}
 
 	bool isPlayer = false;

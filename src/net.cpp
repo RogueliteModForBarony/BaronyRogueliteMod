@@ -25,6 +25,7 @@
 #include "shops.hpp"
 #include "menu.hpp"
 #include "scores.hpp"
+#include "roguelite_progression.hpp"
 #include "collision.hpp"
 #include "paths.hpp"
 #ifdef STEAMWORKS
@@ -46,6 +47,7 @@
 
 #include <atomic>
 #include <future>
+#include <limits>
 #include <thread>
 
 NetHandler* net_handler = nullptr;
@@ -1316,6 +1318,77 @@ void serverUpdatePlayerLVL()
 		net_packet->len = 8;
 		sendPacketSafe(net_sock, -1, net_packet, c - 1);
 	}
+}
+
+void serverSendRogueliteReward(int player, uint64_t score)
+{
+	if ( multiplayer != SERVER || player <= 0 || player >= MAXPLAYERS
+		|| client_disconnected[player] || !Roguelite::enabled() )
+	{
+		return;
+	}
+	strcpy((char*)net_packet->data, "RPGG");
+	net_packet->data[4] = static_cast<Uint8>(player);
+	SDLNet_Write32(Roguelite::configHash(), &net_packet->data[5]);
+	SDLNet_Write32(static_cast<Uint32>(score & 0xFFFFFFFFu), &net_packet->data[9]);
+	SDLNet_Write32(static_cast<Uint32>(score >> 32), &net_packet->data[13]);
+	net_packet->address.host = net_clients[player - 1].host;
+	net_packet->address.port = net_clients[player - 1].port;
+	net_packet->len = 17;
+	sendPacketSafe(net_sock, -1, net_packet, player - 1);
+}
+
+void clientSendRogueliteLoadout()
+{
+	if ( multiplayer != CLIENT || !Roguelite::enabled() || clientnum < 0 || clientnum >= MAXPLAYERS )
+	{
+		return;
+	}
+	const auto& tree = Roguelite::nodes();
+	const auto unlocked = Roguelite::unlockedNodes(clientnum);
+	constexpr size_t packetHeaderLength = 28;
+	const size_t bitmapLength = (tree.size() + 7) / 8;
+	if ( tree.size() > Roguelite::maxSkillTreeNodes
+		|| packetHeaderLength + bitmapLength > NET_PACKET_SIZE )
+	{
+		printlog("[Roguelite]: Cannot send loadout; skill tree exceeds the supported packet size.");
+		return;
+	}
+
+	memset(net_packet->data, 0, packetHeaderLength + bitmapLength);
+	strcpy((char*)net_packet->data, "RPGT");
+	net_packet->data[4] = static_cast<Uint8>(clientnum);
+	SDLNet_Write32(Roguelite::configHash(), &net_packet->data[5]);
+	const uint64_t score = Roguelite::lifetimeScore(clientnum);
+	SDLNet_Write32(static_cast<Uint32>(score & 0xFFFFFFFFu), &net_packet->data[9]);
+	SDLNet_Write32(static_cast<Uint32>(score >> 32), &net_packet->data[13]);
+	net_packet->data[17] = 3;
+	SDLNet_Write16(static_cast<Uint16>(tree.size()), &net_packet->data[18]);
+	const uint64_t earnedPoints = Roguelite::earnedPoints(clientnum);
+	SDLNet_Write32(static_cast<Uint32>(earnedPoints & 0xFFFFFFFFu), &net_packet->data[20]);
+	SDLNet_Write32(static_cast<Uint32>(earnedPoints >> 32), &net_packet->data[24]);
+	std::unordered_map<std::string, size_t> nodeIndexes;
+	nodeIndexes.reserve(tree.size());
+	for ( size_t i = 0; i < tree.size(); ++i )
+	{
+		nodeIndexes.emplace(tree[i].id, i);
+	}
+	for ( const auto& id : unlocked )
+	{
+		const auto nodeIndex = nodeIndexes.find(id);
+		if ( nodeIndex == nodeIndexes.end() )
+		{
+			printlog("[Roguelite]: Skipping unknown unlocked node '%s'.", id.c_str());
+			continue;
+		}
+		const size_t index = nodeIndex->second;
+		net_packet->data[packetHeaderLength + index / 8]
+			|= static_cast<Uint8>(1u << (index % 8));
+	}
+	net_packet->address.host = net_server.host;
+	net_packet->address.port = net_server.port;
+	net_packet->len = static_cast<int>(packetHeaderLength + bitmapLength);
+	sendPacketSafe(net_sock, -1, net_packet, 0);
 }
 
 void serverRemoveClientFollower(int player, Uint32 uidToRemove)
@@ -5138,6 +5211,27 @@ static std::unordered_map<Uint32, void(*)()> clientPacketHandlers = {
 			{
 				entity->getStats()->MISC_FLAGS[net_packet->data[8]] = SDLNet_Read32(&net_packet->data[9]);
 			}
+		}
+	}},
+
+	// update attributes
+	{'RPGG', [](){
+		if ( multiplayer != CLIENT || net_packet->len != 17
+			|| net_packet->data[4] != clientnum
+			|| SDLNet_Read32(&net_packet->data[5]) != Roguelite::configHash() )
+		{
+			printlog("[Roguelite]: Ignored invalid progression reward packet.");
+			return;
+		}
+		const uint64_t score = static_cast<uint64_t>(SDLNet_Read32(&net_packet->data[9]))
+			| (static_cast<uint64_t>(SDLNet_Read32(&net_packet->data[13])) << 32);
+		if ( score <= static_cast<uint64_t>(std::numeric_limits<int>::max()) )
+		{
+			Roguelite::awardRunScore(clientnum, static_cast<int>(score));
+		}
+		else
+		{
+			printlog("[Roguelite]: Ignored out-of-range progression reward.");
 		}
 	}},
 
@@ -8989,6 +9083,77 @@ static std::unordered_map<Uint32, void(*)()> serverPacketHandlers = {
 				}
 			}
 		}
+	}},
+
+	// the client asked for a level up
+	{'RPGT', [](){
+		if ( multiplayer != SERVER || net_packet->len < 28 || net_packet->data[17] != 3 )
+		{
+			return;
+		}
+		const int player = net_packet->data[4];
+		const size_t count = SDLNet_Read16(&net_packet->data[18]);
+		const size_t bitmapLength = (count + 7) / 8;
+		if ( player <= 0 || player >= MAXPLAYERS || player != clientnum || !stats[player] )
+		{
+			printlog("[Roguelite]: Rejected invalid loadout packet.");
+			return;
+		}
+
+		const auto& tree = Roguelite::nodes();
+		bool accepted = count == tree.size()
+			&& static_cast<size_t>(net_packet->len) == 28 + bitmapLength
+			&& SDLNet_Read32(&net_packet->data[5]) == Roguelite::configHash();
+		if ( accepted )
+		{
+			const uint64_t score = static_cast<uint64_t>(SDLNet_Read32(&net_packet->data[9]))
+				| (static_cast<uint64_t>(SDLNet_Read32(&net_packet->data[13])) << 32);
+			const uint64_t earnedPoints = static_cast<uint64_t>(SDLNet_Read32(&net_packet->data[20]))
+				| (static_cast<uint64_t>(SDLNet_Read32(&net_packet->data[24])) << 32);
+			std::vector<std::string> nodeIds;
+			nodeIds.reserve(count);
+			for ( size_t i = 0; i < count; ++i )
+			{
+				if ( net_packet->data[28 + i / 8] & static_cast<Uint8>(1u << (i % 8)) )
+				{
+					nodeIds.push_back(tree[i].id);
+				}
+			}
+			if ( count % 8 != 0 && bitmapLength > 0 )
+			{
+				const Uint8 validBits = static_cast<Uint8>((1u << (count % 8)) - 1u);
+				if ( net_packet->data[28 + bitmapLength - 1] & static_cast<Uint8>(~validBits) )
+				{
+					accepted = false;
+				}
+			}
+			if ( accepted )
+			{
+				accepted = Roguelite::applyRemoteLoadout(player, score, earnedPoints, nodeIds);
+			}
+		}
+		if ( !accepted )
+		{
+			printlog("[Roguelite]: Rejected loadout; restoring authoritative player attributes.");
+		}
+		strcpy((char*)net_packet->data, "ATTR");
+		net_packet->data[4] = static_cast<Uint8>(player);
+		net_packet->data[5] = static_cast<Sint8>(stats[player]->STR);
+		net_packet->data[6] = static_cast<Sint8>(stats[player]->DEX);
+		net_packet->data[7] = static_cast<Sint8>(stats[player]->CON);
+		net_packet->data[8] = static_cast<Sint8>(stats[player]->INT);
+		net_packet->data[9] = static_cast<Sint8>(stats[player]->PER);
+		net_packet->data[10] = static_cast<Sint8>(stats[player]->CHR);
+		net_packet->data[11] = static_cast<Uint8>(stats[player]->EXP);
+		net_packet->data[12] = static_cast<Uint8>(stats[player]->LVL);
+		SDLNet_Write16(static_cast<Sint16>(stats[player]->HP), &net_packet->data[13]);
+		SDLNet_Write16(static_cast<Sint16>(stats[player]->MAXHP), &net_packet->data[15]);
+		SDLNet_Write16(static_cast<Sint16>(stats[player]->MP), &net_packet->data[17]);
+		SDLNet_Write16(static_cast<Sint16>(stats[player]->MAXMP), &net_packet->data[19]);
+		net_packet->address.host = net_clients[player - 1].host;
+		net_packet->address.port = net_clients[player - 1].port;
+		net_packet->len = 21;
+		sendPacketSafe(net_sock, -1, net_packet, player - 1);
 	}},
 
 	// the client asked for a level up
