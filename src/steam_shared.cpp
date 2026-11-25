@@ -210,8 +210,12 @@ bool CSteamStatistics::RequestStats()
 	{
 		return false;
 	}
-	// Request user stats.
-	return SteamUserStats()->RequestCurrentStats();
+	// Steam synchronizes user stats before the game process starts.
+	UserStatsReceived_t callback{};
+	callback.m_eResult = k_EResultOK;
+	callback.m_nGameID = STEAM_APPID;
+	OnUserStatsReceived(&callback);
+	return true;
 }
 
 bool CSteamStatistics::RequestGlobalStats()

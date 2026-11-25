@@ -858,7 +858,7 @@ public:
 	void handleEffectsClient();
 
 	void effectTimes();
-	bool increaseSkill(int skill, bool notify = true);
+	bool increaseSkill(int skill, bool notify = true, bool applyRogueliteGrowth = true);
 
 	Stat* getStats() const;
 

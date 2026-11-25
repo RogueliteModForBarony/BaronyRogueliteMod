@@ -27,8 +27,10 @@
 #include "../shops.hpp"
 #include "../colors.hpp"
 #include "../book.hpp"
+#include "../roguelite_progression.hpp"
 #include "../ui/MainMenu.hpp"
 
+#include <algorithm>
 #include <assert.h>
 
 const Uint32 playerColor(int index, bool colorblind, bool ally)
@@ -15337,6 +15339,79 @@ void Player::CharacterSheet_t::createCharacterSheet()
 		}
 
 		{
+			if ( Roguelite::enabled() )
+			{
+				Frame* modifiersFrame = sheetFrame->addFrame("roguelite modifiers");
+				modifiersFrame->setHollow(true);
+				modifiersFrame->setBorder(0);
+				modifiersFrame->setSize(SDL_Rect{ leftAlignX - bgWidth - 6, 344, bgWidth, 182 });
+				modifiersFrame->addImage(SDL_Rect{ 0, 0, bgWidth, 182 },
+					0xFFFFFFFF, "*#images/ui/CharSheet/HUD_CharSheet_Window_01B_BotA.png", "roguelite modifiers bg");
+
+				auto title = modifiersFrame->addField("title", 64);
+				title->setSize(SDL_Rect{ 8, 4, bgWidth - 16, 20 });
+				title->setFont(smallfont_outline);
+				title->setColor(hudColors.characterSheetNeutral);
+				title->setText("TREE MODIFIERS");
+
+				auto details = modifiersFrame->addField("details", 1024);
+				details->setSize(SDL_Rect{ 8, 25, bgWidth - 16, 150 });
+				details->setFont("fonts/pixel_maz_multiline.ttf#12#1");
+				details->setVJustify(Field::justify_t::TOP);
+				details->setColor(hudColors.characterSheetOffWhiteText);
+				details->setTickCallback([](Widget& widget) {
+					auto& field = static_cast<Field&>(widget);
+					const auto effects = Roguelite::appliedEffects(widget.getOwner());
+					const auto valueFor = [&effects](const char* stat) {
+						const auto effect = std::find_if(effects.begin(), effects.end(), [stat](const Roguelite::Effect& candidate) {
+							return candidate.stat == stat;
+						});
+						return effect == effects.end() ? 0 : effect->value;
+					};
+					const auto format = [&valueFor](const char* label, const char* stat, const char* suffix, bool reduction) {
+						const int value = valueFor(stat);
+						if ( value == 0 )
+						{
+							return std::string();
+						}
+						return std::string(label) + (reduction ? " -" : " +")
+							+ std::to_string(value) + suffix;
+					};
+					std::string text;
+					const auto appendLine = [&text](const std::string& first, const std::string& second) {
+						if ( first.empty() && second.empty() )
+						{
+							return;
+						}
+						if ( !text.empty() )
+						{
+							text.push_back('\n');
+						}
+						if ( !first.empty() )
+						{
+							text += first;
+						}
+						if ( !first.empty() && !second.empty() )
+						{
+							text += " | ";
+						}
+						text += second;
+					};
+					appendLine(format("STR", "strength", "", false), format("DEX", "dexterity", "", false));
+					appendLine(format("CON", "constitution", "", false), format("INT", "intelligence", "", false));
+					appendLine(format("PER", "perception", "", false), format("CHA", "charisma", "", false));
+					appendLine(format("STR skill", "strength_skill_growth", "%", false), format("DEX skill", "dexterity_skill_growth", "%", false));
+					appendLine(format("CON skill", "constitution_skill_growth", "%", false), format("INT skill", "intelligence_skill_growth", "%", false));
+					appendLine(format("PER skill", "perception_skill_growth", "%", false), format("CHA skill", "charisma_skill_growth", "%", false));
+					appendLine(format("XP", "xp_growth", "%", false), format("HP", "max_hp", "", false));
+					appendLine(format("Mana", "max_mp", "", false), format("Magic", "magic_resistance", "%", false));
+					appendLine(format("Burn", "burning_resistance", "%", false), format("Poison", "poison_resistance", "%", false));
+					appendLine(format("Gold", "gold", "", false), format("Meat", "food_meat", "", false));
+					appendLine(format("Weight", "weight_reduction", "%", true), "");
+					field.setText(text.empty() ? "No modifiers unlocked." : text.c_str());
+				});
+			}
+
 			auto tooltipFrame = sheetFrame->addFrame("sheet tooltip");
 			tooltipFrame->setSize(SDL_Rect{ leftAlignX - 200, 0, 200, 200 });
 			tooltipFrame->setHollow(true);
@@ -21898,6 +21973,21 @@ void Player::CharacterSheet_t::updateStats()
 	auto statsPos = statsFrame->getSize();
 	//statsPos.x = sheetFrame->getSize().w - statsPos.w;
 	statsFrame->setSize(statsPos);
+
+	if ( auto modifiersFrame = sheetFrame->findFrame("roguelite modifiers") )
+	{
+		auto modifiersPos = modifiersFrame->getSize();
+		const int gap = 6;
+		const int screenWidth = sheetFrame->getSize().w;
+		const bool statsOnRight = statsPos.x >= screenWidth / 2;
+		modifiersPos.x = statsOnRight
+			? statsPos.x - modifiersPos.w - gap
+			: statsPos.x + statsPos.w + gap;
+		modifiersPos.x = std::max(0, std::min(screenWidth - modifiersPos.w, modifiersPos.x));
+		modifiersPos.y = statsPos.y;
+		modifiersFrame->setSize(modifiersPos);
+		modifiersFrame->setDisabled(screenWidth < statsPos.w + modifiersPos.w + gap);
+	}
 
 	auto statsInnerFrame = statsFrame->findFrame("stats inner frame");
 	assert(statsInnerFrame);

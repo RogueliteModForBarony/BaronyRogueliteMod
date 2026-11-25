@@ -12,6 +12,10 @@
 #pragma once
 #include "Config.hpp"
 
+#ifndef BASE_DATA_DIR
+#define BASE_DATA_DIR "./"
+#endif
+
 #include <stdlib.h>
 //#ifdef WINDOWS
 //#ifdef _DEBUG

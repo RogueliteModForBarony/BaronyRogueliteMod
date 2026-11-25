@@ -4334,6 +4334,10 @@ int Player::PlayerMovement_t::getCharacterModifiedWeight(int* customWeight)
 	{
 		weight = weight * (100 - std::min(100, std::max(0, (int)stats[player.playernum]->getEffectActive(EFF_LIGHTEN_LOAD)))) / 100.0;
 	}
+	if ( stats[player.playernum]->rogueliteWeightReductionPercent > 0 )
+	{
+		weight = weight * (100 - std::min(100, stats[player.playernum]->rogueliteWeightReductionPercent)) / 100.0;
+	}
 	return weight;
 }
 

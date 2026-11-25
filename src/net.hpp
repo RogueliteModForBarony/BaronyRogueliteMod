@@ -52,6 +52,8 @@ void serverUpdatePlayerStats();
 void serverUpdatePlayerGameplayStats(int player, int gameplayStat, int changeval);
 void serverUpdatePlayerConduct(int player, int conduct, int value);
 void serverUpdatePlayerLVL();
+void serverSendRogueliteReward(int player, uint64_t score);
+void clientSendRogueliteLoadout();
 void serverRemoveClientFollower(int player, Uint32 uidToRemove);
 void serverSendItemToPickupAndEquip(int player, Item* item);
 void serverUpdateAllyStat(int player, Uint32 uidToUpdate, int LVL, int HP, int MAXHP, int type);

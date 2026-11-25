@@ -141,40 +141,39 @@ void Button::draw(SDL_Rect _size, SDL_Rect _actualSize, const std::vector<const 
 		if (!icon.empty()) {
 			Image* iconImg = Image::get(icon.c_str());
 			if (iconImg) {
-				int w = iconImg->getWidth();
-				int h = iconImg->getHeight();
+				const int sourceW = iconImg->getWidth();
+				const int sourceH = iconImg->getHeight();
+				const int w = std::max(1, static_cast<int>(std::lround(sourceW * contentScale)));
+				const int h = std::max(1, static_cast<int>(std::lround(sourceH * contentScale)));
 				int x = (style != STYLE_DROPDOWN) ?
 					(size.w - w) / 2 :
 					5 + border;
 				int y = (size.h - h) / 2;
-
-				SDL_Rect pos = _size;
-				pos.x += std::max(0, x - scroll.x);
-				pos.y += std::max(0, y - scroll.y);
-				pos.w = std::min(w, _size.w - x + scroll.x) + std::min(0, x - scroll.x);
-				pos.h = std::min(h, _size.h - y + scroll.y) + std::min(0, y - scroll.y);
-				if (pos.w <= 0 || pos.h <= 0) {
+				const int destinationX = x - scroll.x;
+				const int destinationY = y - scroll.y;
+				const int clipLeft = std::max(0, -destinationX);
+				const int clipTop = std::max(0, -destinationY);
+				const int clipRight = std::min(w, _size.w - destinationX);
+				const int clipBottom = std::min(h, _size.h - destinationY);
+				if (clipRight <= clipLeft || clipBottom <= clipTop) {
 					goto next;
 				}
 
 				SDL_Rect section;
-				section.x = x - scroll.x < 0 ? -(x - scroll.x) : 0;
-				section.y = y - scroll.y < 0 ? -(y - scroll.y) : 0;
-				section.w = pos.w;
-				section.h = pos.h;
-				if (section.w == 0 || section.h == 0) {
-					goto next;
-				}
-
-				SDL_Rect scaledPos;
-				scaledPos.x = pos.x;
-				scaledPos.y = pos.y;
-				scaledPos.w = pos.w;
-				scaledPos.h = pos.h;
+				section.x = clipLeft * sourceW / w;
+				section.y = clipTop * sourceH / h;
+				section.w = (clipRight * sourceW + w - 1) / w - section.x;
+				section.h = (clipBottom * sourceH + h - 1) / h - section.y;
+				SDL_Rect pos{
+					_size.x + destinationX + clipLeft,
+					_size.y + destinationY + clipTop,
+					clipRight - clipLeft,
+					clipBottom - clipTop
+				};
 				if (iconColor) {
-				    iconImg->drawColor(&section, scaledPos, viewport, iconColor);
+				    iconImg->drawColor(&section, pos, viewport, iconColor);
 				} else {
-				    iconImg->drawColor(&section, scaledPos, viewport, focused ? highlightColor : color);
+				    iconImg->drawColor(&section, pos, viewport, focused ? highlightColor : color);
 				}
 			}
 		} else if (!text.empty()) {
@@ -186,7 +185,9 @@ void Button::draw(SDL_Rect _size, SDL_Rect _actualSize, const std::vector<const 
 					++lines;
 				}
 			}
-			int fullH = lines * (_font->height(false) + paddingPerTextLine) + _font->getOutline() * 2;
+			const int fullH = std::max(1, static_cast<int>(std::lround(
+				(lines * (_font->height(false) + paddingPerTextLine) + _font->getOutline() * 2)
+					* contentScale)));
 
 			char* buf = (char*)malloc(text.size() + 1);
 			memcpy(buf, text.c_str(), text.size() + 1);
@@ -202,9 +203,11 @@ void Button::draw(SDL_Rect _size, SDL_Rect _actualSize, const std::vector<const 
 					makeColor(255, 255, 255, 255), makeColor(0, 0, 0, 255));
 				assert(_text);
 
-				int x, y, w, h;
-				w = _text->getWidth();
-				h = _text->getHeight();
+				const int sourceW = _text->getWidth();
+				const int sourceH = _text->getHeight();
+				const int w = std::max(1, static_cast<int>(std::lround(sourceW * contentScale)));
+				const int h = std::max(1, static_cast<int>(std::lround(sourceH * contentScale)));
+				int x, y;
 				if (hjustify == LEFT || hjustify == TOP) {
 					x = style == STYLE_DROPDOWN ? 5 + border : border;
 				} else if (hjustify == CENTER) {
@@ -220,45 +223,44 @@ void Button::draw(SDL_Rect _size, SDL_Rect _actualSize, const std::vector<const 
 					y = yoff - border + std::max(size.h - fullH, 0);
 				}
 
-				x += textOffset.x;
-				y += textOffset.y;
+				x += static_cast<int>(std::lround(textOffset.x * contentScale));
+				y += static_cast<int>(std::lround(textOffset.y * contentScale));
 
-				yoff += _font->height(false) + paddingPerTextLine;
+				yoff += static_cast<int>(std::lround(
+					(_font->height(false) + paddingPerTextLine) * contentScale));
 
-				SDL_Rect pos = _size;
-				pos.x += std::max(0, x - scroll.x);
-				pos.y += std::max(0, y - scroll.y);
-				pos.w = std::min(w, _size.w - x + scroll.x) + std::min(0, x - scroll.x);
-				pos.h = std::min(h, _size.h - y + scroll.y) + std::min(0, y - scroll.y);
-				if (pos.w <= 0 || pos.h <= 0) {
+				const int destinationX = x - scroll.x;
+				const int destinationY = y - scroll.y;
+				const int clipLeft = std::max(0, -destinationX);
+				const int clipTop = std::max(0, -destinationY);
+				const int clipRight = std::min(w, _size.w - destinationX);
+				const int clipBottom = std::min(h, _size.h - destinationY);
+				if (clipRight <= clipLeft || clipBottom <= clipTop) {
 					goto next;
 				}
 
 				SDL_Rect section;
-				section.x = x - scroll.x < 0 ? -(x - scroll.x) : 0;
-				section.y = y - scroll.y < 0 ? -(y - scroll.y) : 0;
-				section.w = pos.w;
-				section.h = pos.h;
-				if (section.w == 0 || section.h == 0) {
-					goto next;
-				}
-
-				SDL_Rect scaledPos;
-				scaledPos.x = pos.x;
-				scaledPos.y = pos.y;
-				scaledPos.w = pos.w;
-				scaledPos.h = pos.h;
+				section.x = clipLeft * sourceW / w;
+				section.y = clipTop * sourceH / h;
+				section.w = (clipRight * sourceW + w - 1) / w - section.x;
+				section.h = (clipBottom * sourceH + h - 1) / h - section.y;
+				SDL_Rect pos{
+					_size.x + destinationX + clipLeft,
+					_size.y + destinationY + clipTop,
+					clipRight - clipLeft,
+					clipBottom - clipTop
+				};
 				if (focused) {
 					if ( parent && static_cast<Frame*>(parent)->getOpacity() < 100.0 )
 					{
 						Uint8 r, g, b, a;
 						::getColor(textHighlightColor, &r, &g, &b, &a);
 						a *= static_cast<Frame*>(parent)->getOpacity() / 100.0;
-						_text->drawColor(section, scaledPos, viewport, makeColor(r, g, b, a));
+						_text->drawColor(section, pos, viewport, makeColor(r, g, b, a));
 					}
 					else
 					{
-						_text->drawColor(section, scaledPos, viewport, textHighlightColor);
+						_text->drawColor(section, pos, viewport, textHighlightColor);
 					}
 				} else {
 					if ( parent && static_cast<Frame*>(parent)->getOpacity() < 100.0 )
@@ -266,11 +268,11 @@ void Button::draw(SDL_Rect _size, SDL_Rect _actualSize, const std::vector<const 
 						Uint8 r, g, b, a;
 						::getColor(textColor, &r, &g, &b, &a);
 						a *= static_cast<Frame*>(parent)->getOpacity() / 100.0;
-						_text->drawColor(section, scaledPos, viewport, makeColor(r, g, b, a));
+						_text->drawColor(section, pos, viewport, makeColor(r, g, b, a));
 					}
 					else
 					{
-						_text->drawColor(section, scaledPos, viewport, textColor);
+						_text->drawColor(section, pos, viewport, textColor);
 					}
 				}
 			} while ((token = nexttoken) != NULL);

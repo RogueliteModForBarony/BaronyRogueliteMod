@@ -5043,7 +5043,7 @@ bool handleEvents(void)
 				}
 #ifdef STEAMWORKS
                 // on steam deck, player 1 always needs a controller.
-                if (SteamUtils()->IsSteamRunningOnSteamDeck()) {
+                if (SteamUtils()->IsRunningOnSteamHardware() == k_ESteamHardwareTypeSteamDeck) {
                     if (id >= 0 && !inputs.hasController(0)) {
                         bindControllerToPlayer(id, 0);
                     }
@@ -7185,8 +7185,12 @@ int main(int argc, char** argv)
 		//SDL_Surface *sky_bmp;
 		light_t* light;
 
-		size_t datadirsz = std::min(sizeof(datadir) - 1, strlen(BASE_DATA_DIR));
-		strncpy(datadir, BASE_DATA_DIR, datadirsz);
+		const char* initialDataDir = BASE_DATA_DIR;
+#ifdef BARONY_RUNTIME_DATA_DIR
+		initialDataDir = BARONY_RUNTIME_DATA_DIR;
+#endif
+		size_t datadirsz = std::min(sizeof(datadir) - 1, strlen(initialDataDir));
+		strncpy(datadir, initialDataDir, datadirsz);
 		datadir[datadirsz] = '\0';
 #ifdef WINDOWS
 		strcpy(outputdir, "./");

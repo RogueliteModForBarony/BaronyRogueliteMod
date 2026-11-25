@@ -1,6 +1,8 @@
 **/books/*
 build/*
+/build-clang/
 **/data/*
+!data/roguelite_skill_tree.json
 **/fonts/*
 **/images/*
 **/items/*
